@@ -1,0 +1,29 @@
+# dotenv environment variables file
+.env
+
+# Maven build output
+target/
+
+# Java compiled files
+*.class
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Frontend build artifacts
+frontend/dist/
+frontend/node_modules/
