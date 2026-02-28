@@ -27,3 +27,6 @@ Thumbs.db
 # Frontend build artifacts
 frontend/dist/
 frontend/node_modules/
+
+# Maven shade plugin artifact
+dependency-reduced-pom.xml
