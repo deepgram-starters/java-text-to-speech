@@ -2,8 +2,8 @@
  * Java Text-to-Speech Starter - Backend Server
  *
  * This is a simple Javalin HTTP server that provides a text-to-speech API endpoint
- * powered by Deepgram's Text-to-Speech service. It's designed to be easily
- * modified and extended for your own projects.
+ * powered by the Deepgram Java SDK. It converts text into natural-sounding speech
+ * and returns binary audio data.
  *
  * Key Features:
  * - Contract-compliant API endpoint: POST /api/text-to-speech
@@ -11,10 +11,14 @@
  * - Returns binary audio data (audio/mpeg)
  * - JWT session auth for API protection
  * - CORS enabled for frontend communication
- * - Direct HTTP to Deepgram (no SDK)
+ * - Uses Deepgram Java SDK for text-to-speech
  */
 
 package com.deepgram.starter;
+
+// ============================================================================
+// SECTION 1: IMPORTS
+// ============================================================================
 
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.JWTVerifier;
@@ -27,22 +31,25 @@ import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
 
+import com.deepgram.DeepgramClient;
+import com.deepgram.core.DeepgramHttpException;
+import com.deepgram.resources.speak.v1.audio.requests.SpeakV1Request;
+import com.deepgram.resources.speak.v1.audio.types.AudioGenerateRequestModel;
+
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 // ============================================================================
-// MAIN APPLICATION
+// SECTION 2: MAIN APPLICATION
 // ============================================================================
 
 public class App {
 
     // ========================================================================
-    // CONFIGURATION - Customize these values for your needs
+    // SECTION 3: CONFIGURATION - Customize these values for your needs
     // ========================================================================
 
     /**
@@ -56,17 +63,18 @@ public class App {
     private static final long JWT_EXPIRY_SECONDS = 3600;
 
     // ========================================================================
-    // STATE - Application-level state
+    // SECTION 4: STATE - Application-level state
     // ========================================================================
 
     private static String sessionSecret;
     private static Algorithm jwtAlgorithm;
     private static JWTVerifier jwtVerifier;
     private static String apiKey;
+    private static DeepgramClient dgClient;
     private static final ObjectMapper jsonMapper = new ObjectMapper();
 
     // ========================================================================
-    // SESSION AUTH - JWT tokens for API protection
+    // SECTION 5: SESSION AUTH - JWT tokens for API protection
     // ========================================================================
 
     /**
@@ -116,7 +124,7 @@ public class App {
     }
 
     // ========================================================================
-    // API KEY LOADING - Load Deepgram API key from environment
+    // SECTION 6: API KEY LOADING - Load Deepgram API key from environment
     // ========================================================================
 
     /**
@@ -145,7 +153,7 @@ public class App {
     }
 
     // ========================================================================
-    // HELPER FUNCTIONS - Modular logic for easier understanding and testing
+    // SECTION 7: HELPER FUNCTIONS - Modular logic for easier understanding
     // ========================================================================
 
     /**
@@ -195,63 +203,7 @@ public class App {
     }
 
     // ========================================================================
-    // DEEPGRAM API - Direct HTTP calls to the Deepgram TTS endpoint
-    // ========================================================================
-
-    /**
-     * Calls the Deepgram TTS API directly and returns the audio bytes.
-     * Sends a JSON body with the text and passes the model as a query parameter.
-     *
-     * @param text  The text to convert to speech
-     * @param model The TTS model to use
-     * @return Binary audio data as byte array
-     * @throws Exception on network or API errors
-     */
-    private static byte[] generateAudio(String text, String model) throws Exception {
-        // Build the JSON payload
-        Map<String, String> payload = new LinkedHashMap<>();
-        payload.put("text", text);
-        byte[] payloadBytes = jsonMapper.writeValueAsBytes(payload);
-
-        // Build the request to Deepgram TTS API
-        URI uri = new URI("https://api.deepgram.com/v1/speak?model=" + model);
-        HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Authorization", "Token " + apiKey);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(30000);
-        conn.setReadTimeout(30000);
-
-        // Write the request body
-        conn.getOutputStream().write(payloadBytes);
-        conn.getOutputStream().flush();
-
-        // Check for API errors (non-2xx status)
-        int responseCode = conn.getResponseCode();
-        if (responseCode < 200 || responseCode >= 300) {
-            InputStream errorStream = conn.getErrorStream();
-            String errorBody = "";
-            if (errorStream != null) {
-                errorBody = new String(errorStream.readAllBytes());
-                errorStream.close();
-            }
-            throw new RuntimeException(
-                    "Deepgram API error (status " + responseCode + "): " + errorBody);
-        }
-
-        // Read all bytes from the response (binary audio data)
-        byte[] audioData;
-        try (InputStream in = conn.getInputStream()) {
-            audioData = in.readAllBytes();
-        }
-        conn.disconnect();
-
-        return audioData;
-    }
-
-    // ========================================================================
-    // AUTH MIDDLEWARE - JWT Bearer token validation
+    // SECTION 8: AUTH MIDDLEWARE - JWT Bearer token validation
     // ========================================================================
 
     /**
@@ -282,7 +234,7 @@ public class App {
     }
 
     // ========================================================================
-    // ROUTE HANDLERS - API endpoint implementations
+    // SECTION 9: ROUTE HANDLERS - API endpoint implementations
     // ========================================================================
 
     /**
@@ -290,9 +242,8 @@ public class App {
      * Issues a signed JWT for session authentication.
      */
     private static void handleSession(Context ctx) {
-        String token = createJWT();
         Map<String, String> response = new LinkedHashMap<>();
-        response.put("token", token);
+        response.put("token", createJWT());
         ctx.json(response);
     }
 
@@ -300,6 +251,8 @@ public class App {
      * POST /api/text-to-speech
      *
      * Contract-compliant text-to-speech endpoint per starter-contracts specification.
+     * Uses the Deepgram Java SDK to generate speech from text.
+     *
      * Accepts:
      * - Query parameter: model (optional, default "aura-2-thalia-en")
      * - Body: JSON with text field (required)
@@ -347,12 +300,43 @@ public class App {
                 return;
             }
 
-            // Generate audio from text via Deepgram API
-            byte[] audioData = generateAudio(text, model);
+            // Generate audio from text via Deepgram SDK
+            SpeakV1Request request = SpeakV1Request.builder()
+                    .text(text)
+                    .model(AudioGenerateRequestModel.valueOf(model))
+                    .build();
 
-            // Return binary audio data with proper content type
+            InputStream audioStream = dgClient.speak().v1().audio().generate(request);
+
+            // Read audio bytes and return as binary response
+            byte[] audioData = audioStream.readAllBytes();
+            audioStream.close();
+
             ctx.contentType("audio/mpeg");
             ctx.result(audioData);
+
+        } catch (DeepgramHttpException e) {
+            // Handle Deepgram API errors with their original status code
+            System.err.println("Text-to-speech API error: " + e.statusCode() + " " + e.getMessage());
+            int statusCode = e.statusCode();
+            String errMsg = e.getMessage() != null ? e.getMessage() : "Deepgram API error";
+
+            String errorType;
+            String errorCode;
+
+            if (statusCode == 413) {
+                errorType = "ValidationError";
+                errorCode = "TEXT_TOO_LONG";
+                errMsg = "Text exceeds maximum allowed length";
+            } else if (statusCode == 400) {
+                errorType = "ValidationError";
+                errorCode = detectErrorCode(errMsg, statusCode);
+            } else {
+                errorType = "GenerationError";
+                errorCode = "GENERATION_FAILED";
+            }
+
+            writeErrorResponse(ctx, statusCode, errorType, errorCode, errMsg);
 
         } catch (Exception e) {
             System.err.println("Text-to-speech error: " + e.getMessage());
@@ -367,7 +351,8 @@ public class App {
                 statusCode = 400;
                 errorCode = "MODEL_NOT_FOUND";
             } else if (errMsgLower.contains("too long") || errMsgLower.contains("length")
-                    || errMsgLower.contains("limit") || errMsgLower.contains("exceed")) {
+                    || errMsgLower.contains("limit") || errMsgLower.contains("exceed")
+                    || errMsgLower.contains("413")) {
                 statusCode = 400;
                 errorCode = "TEXT_TOO_LONG";
             } else if (errMsgLower.contains("invalid") || errMsgLower.contains("malformed")) {
@@ -427,9 +412,15 @@ public class App {
     }
 
     // ========================================================================
-    // SERVER START
+    // SECTION 10: SERVER START
     // ========================================================================
 
+    /**
+     * Application entry point. Loads configuration, validates the API key,
+     * initializes the Deepgram SDK client, and starts the Javalin HTTP server.
+     *
+     * @param args Command-line arguments (unused)
+     */
     public static void main(String[] args) {
         // Load .env file (ignore if not present)
         Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
@@ -437,6 +428,11 @@ public class App {
         // Load API key and initialize session
         apiKey = loadApiKey(dotenv);
         initSessionSecret(dotenv);
+
+        // Initialize Deepgram SDK client
+        dgClient = DeepgramClient.builder()
+                .apiKey(apiKey)
+                .build();
 
         // Read port and host from environment
         String portStr = dotenv.get("PORT", "8081");
@@ -466,11 +462,11 @@ public class App {
 
         System.out.println();
         System.out.println("=".repeat(70));
-        System.out.println("Backend API running at http://localhost:" + port);
-        System.out.println("GET  /api/session");
-        System.out.println("POST /api/text-to-speech (auth required)");
-        System.out.println("GET  /api/metadata");
-        System.out.println("GET  /health");
+        System.out.println("  Backend API running at http://localhost:" + port);
+        System.out.println("  GET  /api/session");
+        System.out.println("  POST /api/text-to-speech (auth required)");
+        System.out.println("  GET  /api/metadata");
+        System.out.println("  GET  /health");
         System.out.println("=".repeat(70));
         System.out.println();
     }
