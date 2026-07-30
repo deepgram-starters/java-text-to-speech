@@ -6,7 +6,7 @@ repository = "https://github.com/deepgram-starters/java-text-to-speech"
 useCase = "text-to-speech"
 language = "Java"
 framework = "Javalin"
-sdk = "N/A"
+sdk = "deepgram-java-sdk"
 
 [install.pre]
 command = "git submodule update --init --recursive"
